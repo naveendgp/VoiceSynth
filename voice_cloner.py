@@ -245,68 +245,224 @@ class VoiceCloner:
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
     
     def _apply_voice_transfer(self, base_audio: np.ndarray, reference_audio: np.ndarray) -> np.ndarray:
-        """Apply voice characteristics from reference to base audio"""
+        """Apply advanced voice characteristics transfer using multiple techniques"""
         try:
-            # Ensure both audios are the same length for processing
-            min_length = min(len(base_audio), len(reference_audio))
+            print("Applying voice transfer...")
             
-            if min_length < 1000:  # Too short to process
+            # Ensure we have enough audio to work with
+            if len(reference_audio) < 5000 or len(base_audio) < 1000:
                 return base_audio
             
-            # Extract spectral characteristics from reference
-            ref_audio = reference_audio[:min_length]
-            base_audio = base_audio[:min_length] if len(base_audio) > min_length else np.pad(base_audio, (0, min_length - len(base_audio)), 'constant')
+            # Normalize inputs
+            ref_audio = librosa.util.normalize(reference_audio)
+            base_audio = librosa.util.normalize(base_audio)
             
-            # Get spectral features
-            ref_stft = librosa.stft(ref_audio)
-            base_stft = librosa.stft(base_audio)
+            # Extract comprehensive voice characteristics from reference
+            ref_features = self._extract_voice_characteristics(ref_audio)
             
-            # Extract magnitude and phase
-            ref_magnitude = np.abs(ref_stft)
-            base_magnitude = np.abs(base_stft)
-            base_phase = np.angle(base_stft)
+            # Apply multiple voice transfer techniques
+            transferred_audio = base_audio.copy()
             
-            # Apply spectral envelope transfer
-            # Use reference magnitude envelope with base content
-            alpha = 0.7  # Blend factor
-            transferred_magnitude = alpha * ref_magnitude + (1 - alpha) * base_magnitude
+            # 1. Spectral envelope matching with multiple frequency bands
+            transferred_audio = self._transfer_spectral_envelope(transferred_audio, ref_audio, ref_features)
             
-            # Reconstruct with transferred magnitude and original phase
-            transferred_stft = transferred_magnitude * np.exp(1j * base_phase)
-            transferred_audio = librosa.istft(transferred_stft)
+            # 2. Formant frequency adjustment
+            transferred_audio = self._adjust_formants(transferred_audio, ref_features)
             
-            # Apply formant shifting to match reference voice characteristics
-            # Extract pitch and formants
-            try:
-                ref_pitches, _ = librosa.piptrack(y=ref_audio, sr=22050)
-                base_pitches, _ = librosa.piptrack(y=base_audio, sr=22050)
-                
-                # Calculate average pitch difference
-                ref_pitch = np.mean(ref_pitches[ref_pitches > 0]) if np.any(ref_pitches > 0) else 150
-                base_pitch = np.mean(base_pitches[base_pitches > 0]) if np.any(base_pitches > 0) else 150
-                
-                # Apply pitch shift to match reference
-                if ref_pitch > 0 and base_pitch > 0:
-                    pitch_ratio = ref_pitch / base_pitch
-                    n_steps = 12 * np.log2(pitch_ratio)
-                    n_steps = np.clip(n_steps, -12, 12)  # Limit to reasonable range
-                    
-                    if abs(n_steps) > 0.5:  # Only apply if significant difference
-                        transferred_audio = librosa.effects.pitch_shift(transferred_audio, sr=22050, n_steps=n_steps)
-            except:
-                pass  # Pitch analysis failed, use spectral transfer only
+            # 3. Pitch contour matching
+            transferred_audio = self._match_pitch_characteristics(transferred_audio, ref_audio, ref_features)
             
-            # Smooth the result
+            # 4. Voice texture transfer (roughness, breathiness)
+            transferred_audio = self._transfer_voice_texture(transferred_audio, ref_audio)
+            
+            # 5. Dynamic range and prosody adjustment
+            transferred_audio = self._adjust_prosody(transferred_audio, ref_features)
+            
+            # Final normalization and blending
             transferred_audio = librosa.util.normalize(transferred_audio)
             
-            # Blend with original for more natural sound
-            final_audio = 0.8 * transferred_audio + 0.2 * base_audio
+            # Stronger blend toward reference characteristics
+            blend_factor = 0.85  # More aggressive voice transfer
+            final_audio = blend_factor * transferred_audio + (1 - blend_factor) * base_audio
             
+            print("Voice transfer complete")
             return final_audio
             
         except Exception as e:
             print(f"Voice transfer error: {e}")
             return base_audio
+    
+    def _extract_voice_characteristics(self, audio: np.ndarray) -> dict:
+        """Extract detailed voice characteristics"""
+        try:
+            features = {}
+            
+            # Pitch characteristics
+            pitches, magnitudes = librosa.piptrack(y=audio, sr=22050, threshold=0.1)
+            valid_pitches = pitches[pitches > 0]
+            if len(valid_pitches) > 0:
+                features['mean_pitch'] = np.mean(valid_pitches)
+                features['pitch_std'] = np.std(valid_pitches)
+                features['pitch_range'] = np.max(valid_pitches) - np.min(valid_pitches)
+            else:
+                features['mean_pitch'] = 150
+                features['pitch_std'] = 20
+                features['pitch_range'] = 50
+            
+            # Spectral characteristics
+            spectral_centroids = librosa.feature.spectral_centroid(y=audio, sr=22050)[0]
+            features['spectral_centroid'] = np.mean(spectral_centroids)
+            features['spectral_centroid_std'] = np.std(spectral_centroids)
+            
+            # Formant estimation using MFCCs
+            mfccs = librosa.feature.mfcc(y=audio, sr=22050, n_mfcc=13)
+            features['formant_profile'] = np.mean(mfccs[:5], axis=1)  # First 5 MFCCs for formants
+            
+            # Voice quality indicators
+            features['zero_crossing_rate'] = np.mean(librosa.feature.zero_crossing_rate(audio))
+            features['spectral_rolloff'] = np.mean(librosa.feature.spectral_rolloff(y=audio, sr=22050))
+            
+            # Harmonic-percussive components
+            harmonic, percussive = librosa.effects.hpss(audio)
+            features['harmonic_ratio'] = np.mean(np.abs(harmonic)) / (np.mean(np.abs(audio)) + 1e-8)
+            
+            return features
+        except Exception as e:
+            print(f"Feature extraction error: {e}")
+            return {'mean_pitch': 150, 'spectral_centroid': 2000, 'formant_profile': np.zeros(5)}
+    
+    def _transfer_spectral_envelope(self, audio: np.ndarray, ref_audio: np.ndarray, ref_features: dict) -> np.ndarray:
+        """Transfer spectral envelope characteristics"""
+        try:
+            # Multi-resolution spectral analysis
+            stft_audio = librosa.stft(audio, hop_length=512)
+            stft_ref = librosa.stft(ref_audio[:len(audio)] if len(ref_audio) > len(audio) else np.pad(ref_audio, (0, len(audio) - len(ref_audio)), 'wrap'), hop_length=512)
+            
+            # Extract magnitude spectra
+            mag_audio = np.abs(stft_audio)
+            mag_ref = np.abs(stft_ref)
+            phase_audio = np.angle(stft_audio)
+            
+            # Smooth spectral envelope transfer in frequency bands
+            n_bands = 8
+            freq_bins = mag_audio.shape[0]
+            band_size = freq_bins // n_bands
+            
+            transferred_mag = mag_audio.copy()
+            
+            for band in range(n_bands):
+                start_bin = band * band_size
+                end_bin = min((band + 1) * band_size, freq_bins)
+                
+                # Calculate average energy in this band for both signals
+                ref_energy = np.mean(mag_ref[start_bin:end_bin])
+                audio_energy = np.mean(mag_audio[start_bin:end_bin])
+                
+                if audio_energy > 0:
+                    # Transfer energy characteristics
+                    energy_ratio = ref_energy / audio_energy
+                    energy_ratio = np.clip(energy_ratio, 0.3, 3.0)  # Limit extreme changes
+                    transferred_mag[start_bin:end_bin] *= energy_ratio
+            
+            # Reconstruct audio
+            transferred_stft = transferred_mag * np.exp(1j * phase_audio)
+            return librosa.istft(transferred_stft, hop_length=512)
+            
+        except Exception as e:
+            print(f"Spectral transfer error: {e}")
+            return audio
+    
+    def _adjust_formants(self, audio: np.ndarray, ref_features: dict) -> np.ndarray:
+        """Adjust formant frequencies to match reference"""
+        try:
+            # Use pitch shifting to approximate formant adjustment
+            formant_shift = 0
+            if 'formant_profile' in ref_features:
+                # Calculate approximate formant adjustment based on MFCC differences
+                target_brightness = np.mean(ref_features['formant_profile'][:3])
+                
+                # Adjust based on brightness (simplified formant approximation)
+                if target_brightness > 0.5:
+                    formant_shift = 2  # Brighter voice
+                elif target_brightness < -0.5:
+                    formant_shift = -2  # Darker voice
+            
+            if abs(formant_shift) > 0.5:
+                return librosa.effects.pitch_shift(audio, sr=22050, n_steps=formant_shift)
+            
+            return audio
+        except Exception as e:
+            print(f"Formant adjustment error: {e}")
+            return audio
+    
+    def _match_pitch_characteristics(self, audio: np.ndarray, ref_audio: np.ndarray, ref_features: dict) -> np.ndarray:
+        """Match pitch characteristics more accurately"""
+        try:
+            # Extract pitch from both signals
+            pitches_ref, _ = librosa.piptrack(y=ref_audio, sr=22050)
+            pitches_audio, _ = librosa.piptrack(y=audio, sr=22050)
+            
+            # Get valid pitch values
+            valid_ref = pitches_ref[pitches_ref > 50]
+            valid_audio = pitches_audio[pitches_audio > 50]
+            
+            if len(valid_ref) > 0 and len(valid_audio) > 0:
+                ref_median_pitch = np.median(valid_ref)
+                audio_median_pitch = np.median(valid_audio)
+                
+                # Calculate pitch shift needed
+                if audio_median_pitch > 0:
+                    pitch_ratio = ref_median_pitch / audio_median_pitch
+                    n_steps = 12 * np.log2(pitch_ratio)
+                    n_steps = np.clip(n_steps, -8, 8)
+                    
+                    if abs(n_steps) > 0.5:
+                        audio = librosa.effects.pitch_shift(audio, sr=22050, n_steps=n_steps)
+            
+            return audio
+        except Exception as e:
+            print(f"Pitch matching error: {e}")
+            return audio
+    
+    def _transfer_voice_texture(self, audio: np.ndarray, ref_audio: np.ndarray) -> np.ndarray:
+        """Transfer voice texture characteristics"""
+        try:
+            # Add controlled noise based on reference voice texture
+            ref_noise_level = np.std(ref_audio - librosa.effects.preemphasis(ref_audio))
+            audio_noise_level = np.std(audio - librosa.effects.preemphasis(audio))
+            
+            if audio_noise_level > 0:
+                noise_ratio = ref_noise_level / audio_noise_level
+                noise_ratio = np.clip(noise_ratio, 0.5, 2.0)
+                
+                # Generate controlled noise
+                noise = np.random.randn(len(audio)) * ref_noise_level * 0.1
+                audio = audio + noise * 0.05  # Add subtle texture
+            
+            return audio
+        except Exception as e:
+            print(f"Texture transfer error: {e}")
+            return audio
+    
+    def _adjust_prosody(self, audio: np.ndarray, ref_features: dict) -> np.ndarray:
+        """Adjust prosodic characteristics"""
+        try:
+            # Apply dynamic range adjustment based on reference
+            if 'spectral_centroid_std' in ref_features:
+                target_dynamics = ref_features['spectral_centroid_std']
+                current_dynamics = np.std(librosa.feature.spectral_centroid(y=audio, sr=22050))
+                
+                if current_dynamics > 0:
+                    dynamics_ratio = target_dynamics / current_dynamics
+                    dynamics_ratio = np.clip(dynamics_ratio, 0.7, 1.5)
+                    
+                    # Apply subtle compression/expansion
+                    audio = np.sign(audio) * np.power(np.abs(audio), 1.0 / dynamics_ratio)
+            
+            return audio
+        except Exception as e:
+            print(f"Prosody adjustment error: {e}")
+            return audio
     
     def _synthesize_with_gtts(
         self, 
