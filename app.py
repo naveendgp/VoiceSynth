@@ -195,15 +195,15 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Error handling for missing models
-if not st.session_state.voice_cloner.models_loaded:
-    st.error("""
-    ⚠️ **Models not loaded properly**
-    
-    This may be due to:
-    - Missing model files
-    - Insufficient system resources
-    - Network connectivity issues
-    
-    Please ensure all required models are available and try refreshing the page.
-    """)
+# Display TTS engine status
+with st.expander("🔧 TTS Engine Status", expanded=False):
+    if st.session_state.voice_cloner.models_loaded:
+        from voice_cloner import PYTTSX3_AVAILABLE, GTTS_AVAILABLE
+        if PYTTSX3_AVAILABLE:
+            st.success("✅ Using pyttsx3 TTS engine - Real speech synthesis available!")
+        elif GTTS_AVAILABLE:
+            st.success("✅ Using Google TTS engine - High quality speech synthesis!")
+        else:
+            st.warning("⚠️ Using fallback synthesis - Audio quality may be limited")
+    else:
+        st.error("❌ TTS engine not loaded properly")

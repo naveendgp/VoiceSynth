@@ -8,8 +8,21 @@ import os
 import warnings
 warnings.filterwarnings("ignore")
 
-# Simplified implementation without complex TTS dependencies
-TTS_AVAILABLE = False
+# Try to import available TTS libraries
+try:
+    import pyttsx3
+    PYTTSX3_AVAILABLE = True
+except ImportError:
+    PYTTSX3_AVAILABLE = False
+
+try:
+    from gtts import gTTS
+    import io
+    GTTS_AVAILABLE = True
+except ImportError:
+    GTTS_AVAILABLE = False
+
+TTS_AVAILABLE = PYTTSX3_AVAILABLE or GTTS_AVAILABLE
 
 class VoiceCloner:
     """Voice cloning system using Coqui TTS models"""
@@ -26,21 +39,36 @@ class VoiceCloner:
     def _load_models(self):
         """Load the required TTS models"""
         try:
-            if not TTS_AVAILABLE:
-                print("TTS library not available. Using fallback implementation.")
-                self._init_fallback_models()
+            if PYTTSX3_AVAILABLE:
+                print("Loading pyttsx3 TTS engine...")
+                self.tts_engine = pyttsx3.init()
+                # Set properties for better voice quality
+                voices = self.tts_engine.getProperty('voices')
+                if voices:
+                    # Try to find a good voice
+                    for voice in voices:
+                        if 'english' in voice.name.lower() or 'en' in voice.id.lower():
+                            self.tts_engine.setProperty('voice', voice.id)
+                            break
+                
+                self.tts_engine.setProperty('rate', 180)  # Speed
+                self.tts_engine.setProperty('volume', 0.9)  # Volume
+                self.models_loaded = True
+                print("pyttsx3 TTS engine loaded successfully!")
                 return
-            
-            # Load XTTS model for voice cloning
-            print("Loading XTTS model...")
-            self.tts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
-            
-            self.models_loaded = True
-            print("Models loaded successfully!")
+                
+            elif GTTS_AVAILABLE:
+                print("Google TTS available...")
+                self.models_loaded = True
+                print("Google TTS ready!")
+                return
+            else:
+                print("No TTS library available. Using enhanced fallback implementation.")
+                self._init_fallback_models()
             
         except Exception as e:
             print(f"Error loading TTS models: {e}")
-            print("Falling back to alternative implementation...")
+            print("Using enhanced fallback implementation...")
             self._init_fallback_models()
     
     def _init_fallback_models(self):
@@ -121,18 +149,135 @@ class VoiceCloner:
         speed: float = 1.0,
         pitch_shift: float = 0.0
     ) -> Optional[np.ndarray]:
-        """Synthesize speech using the cloned voice"""
+        """Synthesize speech using the available TTS engine"""
         try:
             if not self.models_loaded:
                 return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
             
-            if self.tts_model and TTS_AVAILABLE:
-                return self._synthesize_with_xtts(text, speaker_embedding, speed, pitch_shift)
+            if PYTTSX3_AVAILABLE and hasattr(self, 'tts_engine'):
+                return self._synthesize_with_pyttsx3(text, speaker_embedding, speed, pitch_shift)
+            elif GTTS_AVAILABLE:
+                return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
             else:
                 return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
                 
         except Exception as e:
             print(f"Error synthesizing speech: {e}")
+            return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+    
+    def _synthesize_with_pyttsx3(
+        self, 
+        text: str, 
+        speaker_embedding: np.ndarray, 
+        speed: float, 
+        pitch_shift: float
+    ) -> Optional[np.ndarray]:
+        """Synthesize speech using pyttsx3"""
+        try:
+            import tempfile
+            import os
+            
+            # Adjust TTS engine properties based on speaker characteristics
+            if len(speaker_embedding) > 5:
+                # Use speaker features to adjust voice properties
+                avg_pitch = np.mean(speaker_embedding[:5])
+                
+                # Adjust rate based on speed parameter
+                rate = max(120, min(250, int(180 * speed)))
+                self.tts_engine.setProperty('rate', rate)
+                
+                # Try to adjust pitch if possible (not all engines support this)
+                try:
+                    voices = self.tts_engine.getProperty('voices')
+                    if voices and len(voices) > 1:
+                        # Choose voice based on pitch characteristics
+                        if avg_pitch > 0:
+                            # Higher pitch - try to find female voice
+                            for voice in voices:
+                                if any(word in voice.name.lower() for word in ['female', 'woman', 'zira', 'hazel']):
+                                    self.tts_engine.setProperty('voice', voice.id)
+                                    break
+                        else:
+                            # Lower pitch - try to find male voice
+                            for voice in voices:
+                                if any(word in voice.name.lower() for word in ['male', 'man', 'david', 'mark']):
+                                    self.tts_engine.setProperty('voice', voice.id)
+                                    break
+                except:
+                    pass  # Voice selection failed, use default
+            
+            # Create temporary file for audio output
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                tmp_filename = tmp_file.name
+            
+            # Generate speech to file
+            self.tts_engine.save_to_file(text, tmp_filename)
+            self.tts_engine.runAndWait()
+            
+            # Load the generated audio
+            audio, sr = librosa.load(tmp_filename, sr=22050)
+            
+            # Clean up temp file
+            try:
+                os.unlink(tmp_filename)
+            except:
+                pass
+            
+            # Apply pitch shift if requested
+            if pitch_shift != 0.0:
+                audio = librosa.effects.pitch_shift(audio, sr=22050, n_steps=pitch_shift * 12)
+            
+            # Normalize
+            audio = librosa.util.normalize(audio) * 0.8
+            
+            return audio
+            
+        except Exception as e:
+            print(f"pyttsx3 synthesis error: {e}")
+            return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+    
+    def _synthesize_with_gtts(
+        self, 
+        text: str, 
+        speaker_embedding: np.ndarray, 
+        speed: float, 
+        pitch_shift: float
+    ) -> Optional[np.ndarray]:
+        """Synthesize speech using Google TTS"""
+        try:
+            # Create gTTS object
+            tts = gTTS(text=text, lang='en', slow=(speed < 0.8))
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
+                tmp_filename = tmp_file.name
+            
+            tts.save(tmp_filename)
+            
+            # Load audio
+            audio, sr = librosa.load(tmp_filename, sr=22050)
+            
+            # Clean up
+            try:
+                os.unlink(tmp_filename)
+            except:
+                pass
+            
+            # Apply speed adjustment
+            if speed != 1.0:
+                audio = librosa.effects.time_stretch(audio, rate=speed)
+            
+            # Apply pitch shift
+            if pitch_shift != 0.0:
+                audio = librosa.effects.pitch_shift(audio, sr=22050, n_steps=pitch_shift * 12)
+            
+            # Normalize
+            audio = librosa.util.normalize(audio) * 0.8
+            
+            return audio
+            
+        except Exception as e:
+            print(f"Google TTS synthesis error: {e}")
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
     
     def _synthesize_with_xtts(
