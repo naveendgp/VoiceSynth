@@ -56,11 +56,13 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.header("🎵 Upload Voice Sample")
     
-    # File uploader
+    # File uploader with better error handling
     uploaded_file = st.file_uploader(
         "Choose an audio file",
         type=['wav', 'mp3', 'm4a'],
-        help="Upload a 10-30 second voice sample for cloning"
+        help="Upload a 10-30 second voice sample for cloning",
+        accept_multiple_files=False,
+        key="audio_upload"
     )
     
     if uploaded_file is not None:
@@ -75,28 +77,40 @@ with col1:
         if st.session_state.reference_audio_name != uploaded_file.name:
             with st.spinner("🔍 Analyzing voice characteristics..."):
                 try:
-                    # Save uploaded file temporarily
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                        # Convert and save audio
-                        audio_data = st.session_state.audio_processor.process_uploaded_audio(uploaded_file)
-                        sf.write(tmp_file.name, audio_data, 22050)
-                        tmp_file_path = tmp_file.name
+                    # Process the uploaded file
+                    audio_data = st.session_state.audio_processor.process_uploaded_audio(uploaded_file)
                     
-                    # Extract speaker embedding
-                    embedding = st.session_state.voice_cloner.extract_speaker_embedding(tmp_file_path)
-                    
-                    if embedding is not None:
-                        st.session_state.speaker_embedding = embedding
-                        st.session_state.reference_audio_name = uploaded_file.name
-                        st.success("✅ Voice analysis complete! Ready for text-to-speech.")
+                    if audio_data is None:
+                        st.error("❌ Failed to process audio file. Please check the file format and try again.")
                     else:
-                        st.error("❌ Failed to analyze voice. Please try a different audio file.")
-                    
-                    # Clean up temp file
-                    os.unlink(tmp_file_path)
+                        # Save uploaded file temporarily for processing
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                            sf.write(tmp_file.name, audio_data, 22050)
+                            tmp_file_path = tmp_file.name
+                        
+                        # Extract speaker embedding
+                        embedding = st.session_state.voice_cloner.extract_speaker_embedding(tmp_file_path)
+                        
+                        if embedding is not None:
+                            st.session_state.speaker_embedding = embedding
+                            st.session_state.reference_audio_name = uploaded_file.name
+                            st.success("✅ Voice analysis complete! Ready for text-to-speech.")
+                            
+                            # Show audio info
+                            duration = len(audio_data) / 22050
+                            st.info(f"Audio processed: {duration:.1f} seconds")
+                        else:
+                            st.error("❌ Failed to analyze voice. Please try a different audio file.")
+                        
+                        # Clean up temp file
+                        try:
+                            os.unlink(tmp_file_path)
+                        except:
+                            pass  # Ignore cleanup errors
                     
                 except Exception as e:
                     st.error(f"❌ Error processing audio: {str(e)}")
+                    st.error("Please ensure your audio file is in a supported format (WAV, MP3, M4A) and try again.")
         else:
             st.success("✅ Voice already analyzed and ready!")
 
