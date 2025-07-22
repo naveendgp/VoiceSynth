@@ -46,18 +46,18 @@ class VoiceCloner:
     def _load_models(self):
         """Load the required TTS models"""
         try:
-            if EDGE_TTS_AVAILABLE:
-                print("Loading Microsoft Edge TTS engine...")
-                self.tts_mode = "edge_tts"
-                self.models_loaded = True
-                print("Microsoft Edge TTS loaded successfully!")
-                return
-                
-            elif GTTS_AVAILABLE:
+            if GTTS_AVAILABLE:
                 print("Loading Google TTS engine...")
                 self.tts_mode = "gtts"
                 self.models_loaded = True
                 print("Google TTS loaded successfully!")
+                return
+                
+            elif EDGE_TTS_AVAILABLE:
+                print("Loading Microsoft Edge TTS engine...")
+                self.tts_mode = "edge_tts"
+                self.models_loaded = True
+                print("Microsoft Edge TTS loaded successfully!")
                 return
                 
             elif PYTTSX3_AVAILABLE:
@@ -224,21 +224,54 @@ class VoiceCloner:
             rate_str = f"{int((speed - 1) * 50):+d}%"
             
             async def generate_speech():
-                communicate = edge_tts.Communicate(text, voice)
+                # Create communicate object with rate adjustment
+                ssml = f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="{voice}"><prosody rate="{rate_str}">{text}</prosody></voice></speak>'
+                communicate = edge_tts.Communicate(ssml, voice)
                 
                 # Create temporary file for audio output
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
                     tmp_filename = tmp_file.name
                 
-                # Generate speech
-                await communicate.save(tmp_filename)
+                # Generate speech and save to file
+                with open(tmp_filename, "wb") as file:
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            file.write(chunk["data"])
+                
                 return tmp_filename
             
-            # Run async function
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            tmp_filename = loop.run_until_complete(generate_speech())
-            loop.close()
+            # Run async function with proper error handling
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                tmp_filename = loop.run_until_complete(generate_speech())
+                loop.close()
+            except Exception as e:
+                print(f"Edge TTS async error: {e}")
+                # Fall back to simpler approach
+                communicate = edge_tts.Communicate(text, voice)
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
+                    tmp_filename = tmp_file.name
+                
+                # Try synchronous generation
+                import subprocess
+                import sys
+                result = subprocess.run([
+                    sys.executable, '-c', 
+                    f'''
+import asyncio
+import edge_tts
+
+async def main():
+    communicate = edge_tts.Communicate("{text}", "{voice}")
+    await communicate.save("{tmp_filename}")
+
+asyncio.run(main())
+'''
+                ], capture_output=True)
+                
+                if result.returncode != 0:
+                    raise Exception(f"Edge TTS subprocess failed: {result.stderr.decode()}")
             
             print(f"Edge TTS audio saved to {tmp_filename}")
             
@@ -268,6 +301,10 @@ class VoiceCloner:
             
         except Exception as e:
             print(f"Edge TTS synthesis error: {e}")
+            # Try Google TTS as fallback
+            if GTTS_AVAILABLE:
+                print("Falling back to Google TTS...")
+                return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
     
     def _synthesize_with_pyttsx3(
@@ -576,38 +613,48 @@ class VoiceCloner:
         speed: float, 
         pitch_shift: float
     ) -> Optional[np.ndarray]:
-        """Synthesize speech using Google TTS"""
+        """Synthesize speech using Google TTS with voice cloning"""
         try:
-            # Create gTTS object
-            tts = gTTS(text=text, lang='en', slow=(speed < 0.8))
+            import tempfile
+            import os
+            
+            # Create gTTS object with better settings
+            tts = gTTS(text=text, lang='en', slow=(speed < 0.8), tld='com')
             
             # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
                 tmp_filename = tmp_file.name
             
             tts.save(tmp_filename)
+            print(f"Google TTS audio saved to {tmp_filename}")
             
             # Load audio
-            audio, sr = librosa.load(tmp_filename, sr=22050)
+            base_audio, sr = librosa.load(tmp_filename, sr=22050)
             
-            # Clean up
+            # Clean up temp file
             try:
                 os.unlink(tmp_filename)
             except:
                 pass
             
+            # Apply voice cloning transfer if reference audio available
+            if len(speaker_embedding) > 1000:  # Reference audio available
+                cloned_audio = self._apply_voice_transfer(base_audio, speaker_embedding)
+            else:
+                cloned_audio = base_audio
+            
             # Apply speed adjustment
             if speed != 1.0:
-                audio = librosa.effects.time_stretch(audio, rate=speed)
+                cloned_audio = librosa.effects.time_stretch(cloned_audio, rate=speed)
             
             # Apply pitch shift
             if pitch_shift != 0.0:
-                audio = librosa.effects.pitch_shift(audio, sr=22050, n_steps=pitch_shift * 12)
+                cloned_audio = librosa.effects.pitch_shift(cloned_audio, sr=22050, n_steps=pitch_shift * 12)
             
             # Normalize
-            audio = librosa.util.normalize(audio) * 0.8
+            cloned_audio = librosa.util.normalize(cloned_audio) * 0.8
             
-            return audio
+            return cloned_audio
             
         except Exception as e:
             print(f"Google TTS synthesis error: {e}")
