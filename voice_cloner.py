@@ -709,13 +709,13 @@ asyncio.run(main())
             
             # Apply gender-appropriate pitch adjustment for Google TTS (which is female by default)
             if detected_gender == 'male':
-                # Lower pitch for male voice (-5 to -7 semitones)
-                base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-6)
-                print("Applied male voice pitch adjustment (-6 semitones)")
+                # More gentle pitch adjustment to avoid crackling
+                base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-3.5)
+                print("Applied male voice pitch adjustment (-3.5 semitones)")
             elif detected_gender == 'unknown':
                 # Default to male adjustment since most detection failures are with male voices
-                base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-5)
-                print("Applied default male voice pitch adjustment (-5 semitones)")
+                base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-3)
+                print("Applied default male voice pitch adjustment (-3 semitones)")
             
             # Apply voice cloning transfer if reference audio available
             if len(speaker_embedding) > 1000:  # Reference audio available
@@ -727,12 +727,21 @@ asyncio.run(main())
             if speed != 1.0:
                 cloned_audio = librosa.effects.time_stretch(cloned_audio, rate=speed)
             
-            # Apply pitch shift
+            # Apply pitch shift if requested
             if pitch_shift != 0.0:
                 cloned_audio = librosa.effects.pitch_shift(cloned_audio, sr=22050, n_steps=pitch_shift * 12)
             
-            # Normalize
-            cloned_audio = librosa.util.normalize(cloned_audio) * 0.8
+            # Apply gentle filtering to reduce artifacts
+            try:
+                # Low-pass filter to remove high-frequency artifacts from pitch shifting
+                cloned_audio = librosa.effects.preemphasis(cloned_audio, coef=0.95)
+                # Gentle compression to smooth dynamics
+                cloned_audio = np.tanh(cloned_audio * 0.9) * 0.9
+            except Exception as e:
+                print(f"Audio filtering error: {e}")
+            
+            # Normalize with reduced gain to prevent clipping
+            cloned_audio = librosa.util.normalize(cloned_audio) * 0.7
             
             return cloned_audio
             
