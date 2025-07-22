@@ -22,7 +22,14 @@ try:
 except ImportError:
     GTTS_AVAILABLE = False
 
-TTS_AVAILABLE = PYTTSX3_AVAILABLE or GTTS_AVAILABLE
+try:
+    import edge_tts
+    import asyncio
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
+
+TTS_AVAILABLE = PYTTSX3_AVAILABLE or GTTS_AVAILABLE or EDGE_TTS_AVAILABLE
 
 class VoiceCloner:
     """Voice cloning system using Coqui TTS models"""
@@ -39,9 +46,24 @@ class VoiceCloner:
     def _load_models(self):
         """Load the required TTS models"""
         try:
-            if PYTTSX3_AVAILABLE:
+            if EDGE_TTS_AVAILABLE:
+                print("Loading Microsoft Edge TTS engine...")
+                self.tts_mode = "edge_tts"
+                self.models_loaded = True
+                print("Microsoft Edge TTS loaded successfully!")
+                return
+                
+            elif GTTS_AVAILABLE:
+                print("Loading Google TTS engine...")
+                self.tts_mode = "gtts"
+                self.models_loaded = True
+                print("Google TTS loaded successfully!")
+                return
+                
+            elif PYTTSX3_AVAILABLE:
                 print("Loading pyttsx3 TTS engine...")
                 self.tts_engine = pyttsx3.init()
+                self.tts_mode = "pyttsx3"
                 # Set properties for better voice quality
                 voices = self.tts_engine.getProperty('voices')
                 if voices:
@@ -55,12 +77,6 @@ class VoiceCloner:
                 self.tts_engine.setProperty('volume', 0.9)  # Volume
                 self.models_loaded = True
                 print("pyttsx3 TTS engine loaded successfully!")
-                return
-                
-            elif GTTS_AVAILABLE:
-                print("Google TTS available...")
-                self.models_loaded = True
-                print("Google TTS ready!")
                 return
             else:
                 print("No TTS library available. Using enhanced fallback implementation.")
@@ -154,15 +170,104 @@ class VoiceCloner:
             if not self.models_loaded:
                 return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
             
-            if PYTTSX3_AVAILABLE and hasattr(self, 'tts_engine'):
-                return self._synthesize_with_pyttsx3(text, speaker_embedding, speed, pitch_shift)
-            elif GTTS_AVAILABLE:
-                return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
-            else:
-                return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+            if hasattr(self, 'tts_mode'):
+                if self.tts_mode == "edge_tts":
+                    return self._synthesize_with_edge_tts(text, speaker_embedding, speed, pitch_shift)
+                elif self.tts_mode == "gtts":
+                    return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
+                elif self.tts_mode == "pyttsx3":
+                    return self._synthesize_with_pyttsx3(text, speaker_embedding, speed, pitch_shift)
+            
+            return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
                 
         except Exception as e:
             print(f"Error synthesizing speech: {e}")
+            return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+    
+    def _synthesize_with_edge_tts(
+        self, 
+        text: str, 
+        speaker_embedding: np.ndarray, 
+        speed: float, 
+        pitch_shift: float
+    ) -> Optional[np.ndarray]:
+        """Synthesize speech using Microsoft Edge TTS with voice selection"""
+        try:
+            import tempfile
+            import os
+            import asyncio
+            
+            # Choose voice based on speaker characteristics
+            voice = "en-US-JennyNeural"  # Default to natural female voice
+            
+            if len(speaker_embedding) > 5:
+                avg_pitch = np.mean(speaker_embedding[:5])
+                spectral_centroid = np.mean(speaker_embedding[5:10]) if len(speaker_embedding) > 10 else 0
+                
+                # Voice selection based on characteristics
+                if avg_pitch < -0.2:  # Lower pitch - male voices
+                    if spectral_centroid > 0:
+                        voice = "en-US-GuyNeural"  # Energetic male
+                    else:
+                        voice = "en-US-DavisNeural"  # Calm male
+                elif avg_pitch > 0.2:  # Higher pitch - female voices  
+                    if spectral_centroid > 0:
+                        voice = "en-US-AriaNeural"  # Expressive female
+                    else:
+                        voice = "en-US-JennyNeural"  # Natural female
+                else:  # Neutral pitch
+                    voice = "en-US-BrandonNeural"  # Neutral voice
+            
+            print(f"Using Edge TTS voice: {voice}")
+            
+            # Adjust speech rate based on speed parameter
+            rate_str = f"{int((speed - 1) * 50):+d}%"
+            
+            async def generate_speech():
+                communicate = edge_tts.Communicate(text, voice)
+                
+                # Create temporary file for audio output
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                    tmp_filename = tmp_file.name
+                
+                # Generate speech
+                await communicate.save(tmp_filename)
+                return tmp_filename
+            
+            # Run async function
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            tmp_filename = loop.run_until_complete(generate_speech())
+            loop.close()
+            
+            print(f"Edge TTS audio saved to {tmp_filename}")
+            
+            # Load the generated audio
+            base_audio, sr = librosa.load(tmp_filename, sr=22050)
+            
+            # Clean up temp file
+            try:
+                os.unlink(tmp_filename)
+            except:
+                pass
+            
+            # Apply voice cloning transfer
+            if len(speaker_embedding) > 1000:  # Reference audio available
+                cloned_audio = self._apply_voice_transfer(base_audio, speaker_embedding)
+            else:
+                cloned_audio = base_audio
+            
+            # Apply pitch shift if requested
+            if pitch_shift != 0.0:
+                cloned_audio = librosa.effects.pitch_shift(cloned_audio, sr=22050, n_steps=pitch_shift * 12)
+            
+            # Normalize
+            cloned_audio = librosa.util.normalize(cloned_audio) * 0.8
+            
+            return cloned_audio
+            
+        except Exception as e:
+            print(f"Edge TTS synthesis error: {e}")
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
     
     def _synthesize_with_pyttsx3(

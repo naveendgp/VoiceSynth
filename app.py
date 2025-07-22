@@ -212,11 +212,14 @@ st.markdown(
 # Display TTS engine status
 with st.expander("🔧 TTS Engine Status", expanded=False):
     if st.session_state.voice_cloner.models_loaded:
-        from voice_cloner import PYTTSX3_AVAILABLE, GTTS_AVAILABLE
-        if PYTTSX3_AVAILABLE:
-            st.success("✅ Using pyttsx3 TTS engine - Real speech synthesis available!")
-        elif GTTS_AVAILABLE:
-            st.success("✅ Using Google TTS engine - High quality speech synthesis!")
+        from voice_cloner import PYTTSX3_AVAILABLE, GTTS_AVAILABLE, EDGE_TTS_AVAILABLE
+        tts_mode = getattr(st.session_state.voice_cloner, 'tts_mode', 'unknown')
+        if tts_mode == "edge_tts" and EDGE_TTS_AVAILABLE:
+            st.success("✅ Using Microsoft Edge TTS - Neural voices with natural speech!")
+        elif tts_mode == "gtts" and GTTS_AVAILABLE:
+            st.success("✅ Using Google TTS - Cloud-based high quality synthesis!")
+        elif tts_mode == "pyttsx3" and PYTTSX3_AVAILABLE:
+            st.success("✅ Using pyttsx3 TTS - Local speech synthesis!")
         else:
             st.warning("⚠️ Using fallback synthesis - Audio quality may be limited")
     else:

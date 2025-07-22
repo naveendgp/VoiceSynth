@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
+    "edge-tts>=7.0.2",
+    "gtts>=2.5.4",
     "librosa>=0.11.0",
     "numpy>=2.2.6",
+    "openai>=1.97.0",
     "pyttsx3>=2.99",
     "soundfile>=0.13.1",
     "streamlit>=1.47.0",
