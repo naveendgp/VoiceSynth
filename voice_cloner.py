@@ -29,7 +29,21 @@ try:
 except ImportError:
     EDGE_TTS_AVAILABLE = False
 
-TTS_AVAILABLE = PYTTSX3_AVAILABLE or GTTS_AVAILABLE or EDGE_TTS_AVAILABLE
+try:
+    import subprocess
+    # Check if espeak is available
+    result = subprocess.run(['which', 'espeak'], capture_output=True)
+    ESPEAK_AVAILABLE = result.returncode == 0
+except:
+    ESPEAK_AVAILABLE = False
+
+try:
+    from TTS.api import TTS
+    COQUI_TTS_AVAILABLE = True
+except ImportError:
+    COQUI_TTS_AVAILABLE = False
+
+TTS_AVAILABLE = PYTTSX3_AVAILABLE or GTTS_AVAILABLE or EDGE_TTS_AVAILABLE or COQUI_TTS_AVAILABLE or ESPEAK_AVAILABLE
 
 class VoiceCloner:
     """Voice cloning system using Coqui TTS models"""
@@ -46,7 +60,22 @@ class VoiceCloner:
     def _load_models(self):
         """Load the required TTS models"""
         try:
-            if GTTS_AVAILABLE:
+            if ESPEAK_AVAILABLE:
+                print("Loading eSpeak TTS engine...")
+                self.tts_mode = "espeak"
+                self.models_loaded = True
+                print("eSpeak TTS loaded successfully!")
+                return
+                
+            elif COQUI_TTS_AVAILABLE:
+                print("Loading Coqui TTS engine...")
+                self.tts_mode = "coqui_tts"
+                self._load_coqui_models()
+                self.models_loaded = True
+                print("Coqui TTS loaded successfully!")
+                return
+                
+            elif GTTS_AVAILABLE:
                 print("Loading Google TTS engine...")
                 self.tts_mode = "gtts"
                 self.models_loaded = True
@@ -237,7 +266,11 @@ class VoiceCloner:
                 return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
             
             if hasattr(self, 'tts_mode'):
-                if self.tts_mode == "edge_tts":
+                if self.tts_mode == "espeak":
+                    return self._synthesize_with_espeak(text, speaker_embedding, speed, pitch_shift)
+                elif self.tts_mode == "coqui_tts":
+                    return self._synthesize_with_coqui_tts(text, speaker_embedding, speed, pitch_shift)
+                elif self.tts_mode == "edge_tts":
                     return self._synthesize_with_edge_tts(text, speaker_embedding, speed, pitch_shift)
                 elif self.tts_mode == "gtts":
                     return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
@@ -248,6 +281,102 @@ class VoiceCloner:
                 
         except Exception as e:
             print(f"Error synthesizing speech: {e}")
+            return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+    
+    def _synthesize_with_espeak(
+        self, 
+        text: str, 
+        speaker_embedding: np.ndarray, 
+        speed: float, 
+        pitch_shift: float
+    ) -> Optional[np.ndarray]:
+        """Synthesize speech using eSpeak with voice cloning"""
+        try:
+            import tempfile
+            import subprocess
+            import os
+            
+            # Detect gender for voice selection
+            detected_gender = self._detect_gender_from_embedding(speaker_embedding)
+            print(f"Detected gender: {detected_gender}")
+            
+            # Select appropriate eSpeak voice
+            if detected_gender == 'male':
+                voice = "en+m3"  # Male voice variant 3
+                pitch_adj = 35   # Lower pitch for male
+            else:
+                voice = "en+f4"  # Female voice variant 4
+                pitch_adj = 60   # Higher pitch for female
+            
+            # Adjust speed (eSpeak uses words per minute)
+            espeak_speed = max(80, min(300, int(175 * speed)))
+            
+            # Create temporary output file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                output_path = tmp_file.name
+            
+            # Build eSpeak command
+            espeak_cmd = [
+                'espeak', 
+                '-v', voice,
+                '-s', str(espeak_speed),
+                '-p', str(pitch_adj),
+                '-a', '100',  # Amplitude
+                '-g', '5',    # Gap between words
+                '--stdout',
+                text
+            ]
+            
+            print(f"Using eSpeak voice: {voice} (speed: {espeak_speed}, pitch: {pitch_adj})")
+            
+            # Generate speech with eSpeak
+            result = subprocess.run(espeak_cmd, capture_output=True)
+            
+            if result.returncode != 0:
+                raise Exception(f"eSpeak failed with return code {result.returncode}")
+            
+            # Save audio data to file
+            with open(output_path, 'wb') as f:
+                f.write(result.stdout)
+            
+            # Load the generated audio
+            base_audio, sr = librosa.load(output_path, sr=22050)
+            
+            # Clean up temp file
+            try:
+                os.unlink(output_path)
+            except:
+                pass
+            
+            # Apply voice cloning transfer if reference audio available
+            if len(speaker_embedding) > 1000:  # Reference audio available
+                cloned_audio = self._apply_voice_transfer(base_audio, speaker_embedding)
+            else:
+                cloned_audio = base_audio
+            
+            # Apply additional pitch shift if requested
+            if pitch_shift != 0.0:
+                cloned_audio = librosa.effects.pitch_shift(cloned_audio, sr=22050, n_steps=pitch_shift * 12)
+            
+            # Apply gentle filtering and normalization
+            try:
+                cloned_audio = librosa.effects.preemphasis(cloned_audio, coef=0.95)
+                cloned_audio = np.tanh(cloned_audio * 0.9) * 0.9
+            except Exception as e:
+                print(f"Audio filtering error: {e}")
+            
+            # Normalize
+            cloned_audio = librosa.util.normalize(cloned_audio) * 0.8
+            
+            print("eSpeak TTS generation completed successfully!")
+            return cloned_audio
+            
+        except Exception as e:
+            print(f"eSpeak TTS synthesis error: {e}")
+            # Fallback to Google TTS
+            if GTTS_AVAILABLE:
+                print("Falling back to Google TTS...")
+                return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
     
     def _synthesize_with_edge_tts(
@@ -773,6 +902,120 @@ asyncio.run(main())
         except Exception as e:
             print(f"Gender detection error: {e}")
             return 'unknown'
+    
+    def _load_coqui_models(self):
+        """Load Coqui TTS models"""
+        try:
+            # Use XTTS-v2 model for voice cloning
+            print("Loading XTTS-v2 model...")
+            self.coqui_tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+            print("XTTS-v2 model loaded successfully!")
+        except Exception as e:
+            print(f"Error loading Coqui TTS models: {e}")
+            raise
+    
+    def _synthesize_with_coqui_tts(
+        self, 
+        text: str, 
+        speaker_embedding: np.ndarray, 
+        speed: float, 
+        pitch_shift: float
+    ) -> Optional[np.ndarray]:
+        """Synthesize speech using Coqui TTS XTTS-v2 with voice cloning"""
+        try:
+            import tempfile
+            import os
+            
+            # Detect gender for voice selection
+            detected_gender = self._detect_gender_from_embedding(speaker_embedding)
+            print(f"Detected gender: {detected_gender}")
+            
+            # Create temporary files
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_audio_file:
+                ref_audio_path = ref_audio_file.name
+                
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as output_file:
+                output_path = output_file.name
+            
+            # Save reference audio if available
+            if hasattr(self, 'reference_audio') and self.reference_audio is not None:
+                # Use the original reference audio
+                sf.write(ref_audio_path, self.reference_audio, 22050)
+                print("Using original reference audio for voice cloning")
+            elif len(speaker_embedding) > 22050:
+                # Extract audio samples from embedding if available
+                audio_samples = speaker_embedding[-22050:]  # Last 22050 samples (1 second)
+                sf.write(ref_audio_path, audio_samples, 22050)
+                print("Using embedded audio samples for voice cloning")
+            else:
+                # Use a default voice based on detected gender
+                default_voice = "female" if detected_gender == "female" else "male"
+                print(f"No reference audio available, using default {default_voice} voice")
+                # Generate without reference audio (will use model's default voice)
+                self.coqui_tts.tts_to_file(text=text, file_path=output_path, language="en")
+                
+                # Load and return the generated audio
+                generated_audio, sr = librosa.load(output_path, sr=22050)
+                
+                # Apply pitch adjustment based on detected gender
+                if detected_gender == "male":
+                    generated_audio = librosa.effects.pitch_shift(generated_audio, sr=22050, n_steps=-2)
+                
+                # Clean up temp files
+                try:
+                    os.unlink(output_path)
+                except:
+                    pass
+                    
+                return generated_audio
+            
+            # Generate speech with voice cloning
+            print("Generating speech with voice cloning...")
+            self.coqui_tts.tts_to_file(
+                text=text, 
+                speaker_wav=ref_audio_path, 
+                file_path=output_path, 
+                language="en"
+            )
+            
+            # Load the generated audio
+            generated_audio, sr = librosa.load(output_path, sr=22050)
+            
+            # Apply speed adjustment
+            if speed != 1.0:
+                generated_audio = librosa.effects.time_stretch(generated_audio, rate=speed)
+            
+            # Apply pitch shift
+            if pitch_shift != 0.0:
+                generated_audio = librosa.effects.pitch_shift(generated_audio, sr=22050, n_steps=pitch_shift * 12)
+            
+            # Apply gentle filtering and normalization
+            try:
+                generated_audio = librosa.effects.preemphasis(generated_audio, coef=0.95)
+                generated_audio = np.tanh(generated_audio * 0.9) * 0.9
+            except Exception as e:
+                print(f"Audio filtering error: {e}")
+            
+            # Normalize
+            generated_audio = librosa.util.normalize(generated_audio) * 0.8
+            
+            # Clean up temp files
+            try:
+                os.unlink(ref_audio_path)
+                os.unlink(output_path)
+            except:
+                pass
+            
+            print("Coqui TTS generation completed successfully!")
+            return generated_audio
+            
+        except Exception as e:
+            print(f"Coqui TTS synthesis error: {e}")
+            # Fallback to Google TTS
+            if GTTS_AVAILABLE:
+                print("Falling back to Google TTS...")
+                return self._synthesize_with_gtts(text, speaker_embedding, speed, pitch_shift)
+            return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
     
     def _synthesize_with_xtts(
         self, 

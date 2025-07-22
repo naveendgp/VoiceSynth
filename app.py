@@ -212,9 +212,13 @@ st.markdown(
 # Display TTS engine status
 with st.expander("🔧 TTS Engine Status", expanded=False):
     if st.session_state.voice_cloner.models_loaded:
-        from voice_cloner import PYTTSX3_AVAILABLE, GTTS_AVAILABLE, EDGE_TTS_AVAILABLE
+        from voice_cloner import PYTTSX3_AVAILABLE, GTTS_AVAILABLE, EDGE_TTS_AVAILABLE, COQUI_TTS_AVAILABLE, ESPEAK_AVAILABLE
         tts_mode = getattr(st.session_state.voice_cloner, 'tts_mode', 'unknown')
-        if tts_mode == "edge_tts" and EDGE_TTS_AVAILABLE:
+        if tts_mode == "espeak" and ESPEAK_AVAILABLE:
+            st.success("✅ Using eSpeak TTS - Open-source speech synthesis with male voice support!")
+        elif tts_mode == "coqui_tts" and COQUI_TTS_AVAILABLE:
+            st.success("✅ Using Coqui TTS XTTS-v2 - Advanced voice cloning with neural synthesis!")
+        elif tts_mode == "edge_tts" and EDGE_TTS_AVAILABLE:
             st.success("✅ Using Microsoft Edge TTS - Neural voices with natural speech!")
         elif tts_mode == "gtts" and GTTS_AVAILABLE:
             st.success("✅ Using Google TTS - Cloud-based high quality synthesis!")

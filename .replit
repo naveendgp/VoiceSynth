@@ -2,7 +2,7 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["espeak-ng", "ffmpeg-full", "libsndfile", "pkg-config"]
+packages = ["espeak-ng", "ffmpeg-full", "libsndfile", "pkg-config", "espeak"]
 
 [deployment]
 deploymentTarget = "autoscale"
