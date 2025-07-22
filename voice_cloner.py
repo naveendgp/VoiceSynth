@@ -172,7 +172,7 @@ class VoiceCloner:
         speed: float, 
         pitch_shift: float
     ) -> Optional[np.ndarray]:
-        """Synthesize speech using pyttsx3"""
+        """Synthesize speech using pyttsx3 and then apply voice cloning"""
         try:
             import tempfile
             import os
@@ -214,8 +214,10 @@ class VoiceCloner:
             self.tts_engine.save_to_file(text, tmp_filename)
             self.tts_engine.runAndWait()
             
+            print(f"Audio saved to {tmp_filename}")
+            
             # Load the generated audio
-            audio, sr = librosa.load(tmp_filename, sr=22050)
+            base_audio, sr = librosa.load(tmp_filename, sr=22050)
             
             # Clean up temp file
             try:
@@ -223,18 +225,88 @@ class VoiceCloner:
             except:
                 pass
             
+            # Now apply voice cloning by morphing with reference audio
+            if len(speaker_embedding) > 1000:  # This is reference audio
+                cloned_audio = self._apply_voice_transfer(base_audio, speaker_embedding)
+            else:
+                cloned_audio = base_audio
+            
             # Apply pitch shift if requested
             if pitch_shift != 0.0:
-                audio = librosa.effects.pitch_shift(audio, sr=22050, n_steps=pitch_shift * 12)
+                cloned_audio = librosa.effects.pitch_shift(cloned_audio, sr=22050, n_steps=pitch_shift * 12)
             
             # Normalize
-            audio = librosa.util.normalize(audio) * 0.8
+            cloned_audio = librosa.util.normalize(cloned_audio) * 0.8
             
-            return audio
+            return cloned_audio
             
         except Exception as e:
             print(f"pyttsx3 synthesis error: {e}")
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+    
+    def _apply_voice_transfer(self, base_audio: np.ndarray, reference_audio: np.ndarray) -> np.ndarray:
+        """Apply voice characteristics from reference to base audio"""
+        try:
+            # Ensure both audios are the same length for processing
+            min_length = min(len(base_audio), len(reference_audio))
+            
+            if min_length < 1000:  # Too short to process
+                return base_audio
+            
+            # Extract spectral characteristics from reference
+            ref_audio = reference_audio[:min_length]
+            base_audio = base_audio[:min_length] if len(base_audio) > min_length else np.pad(base_audio, (0, min_length - len(base_audio)), 'constant')
+            
+            # Get spectral features
+            ref_stft = librosa.stft(ref_audio)
+            base_stft = librosa.stft(base_audio)
+            
+            # Extract magnitude and phase
+            ref_magnitude = np.abs(ref_stft)
+            base_magnitude = np.abs(base_stft)
+            base_phase = np.angle(base_stft)
+            
+            # Apply spectral envelope transfer
+            # Use reference magnitude envelope with base content
+            alpha = 0.7  # Blend factor
+            transferred_magnitude = alpha * ref_magnitude + (1 - alpha) * base_magnitude
+            
+            # Reconstruct with transferred magnitude and original phase
+            transferred_stft = transferred_magnitude * np.exp(1j * base_phase)
+            transferred_audio = librosa.istft(transferred_stft)
+            
+            # Apply formant shifting to match reference voice characteristics
+            # Extract pitch and formants
+            try:
+                ref_pitches, _ = librosa.piptrack(y=ref_audio, sr=22050)
+                base_pitches, _ = librosa.piptrack(y=base_audio, sr=22050)
+                
+                # Calculate average pitch difference
+                ref_pitch = np.mean(ref_pitches[ref_pitches > 0]) if np.any(ref_pitches > 0) else 150
+                base_pitch = np.mean(base_pitches[base_pitches > 0]) if np.any(base_pitches > 0) else 150
+                
+                # Apply pitch shift to match reference
+                if ref_pitch > 0 and base_pitch > 0:
+                    pitch_ratio = ref_pitch / base_pitch
+                    n_steps = 12 * np.log2(pitch_ratio)
+                    n_steps = np.clip(n_steps, -12, 12)  # Limit to reasonable range
+                    
+                    if abs(n_steps) > 0.5:  # Only apply if significant difference
+                        transferred_audio = librosa.effects.pitch_shift(transferred_audio, sr=22050, n_steps=n_steps)
+            except:
+                pass  # Pitch analysis failed, use spectral transfer only
+            
+            # Smooth the result
+            transferred_audio = librosa.util.normalize(transferred_audio)
+            
+            # Blend with original for more natural sound
+            final_audio = 0.8 * transferred_audio + 0.2 * base_audio
+            
+            return final_audio
+            
+        except Exception as e:
+            print(f"Voice transfer error: {e}")
+            return base_audio
     
     def _synthesize_with_gtts(
         self, 

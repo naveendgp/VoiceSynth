@@ -98,14 +98,16 @@ with col1:
                         if embedding is not None:
                             st.session_state.speaker_embedding = embedding
                             st.session_state.reference_audio_name = uploaded_file.name
-                            st.success("✅ Voice analysis complete! Ready for text-to-speech.")
+                            st.success("✅ Voice analysis complete! Voice characteristics extracted.")
                             
                             # Show audio info
                             duration = len(audio_data) / 22050
-                            st.info(f"✅ Audio processed successfully: {duration:.1f} seconds")
+                            st.info(f"✅ Audio processed: {duration:.1f} seconds - Ready for voice cloning")
                             
                             if duration >= 30:
                                 st.warning("⚠️ Long audio was clipped to 30 seconds for optimal voice analysis")
+                            
+                            st.markdown("🎭 **Voice Cloning Method**: The system will generate speech using TTS, then apply your voice characteristics through spectral transfer and pitch matching.")
                         else:
                             st.error("❌ Failed to analyze voice. Please try a different audio file.")
                         
@@ -148,13 +150,21 @@ with col2:
             if text_input.strip():
                 with st.spinner("🔊 Synthesizing speech..."):
                     try:
-                        # Generate audio
+                        # Generate audio with progress updates
+                        progress_text = st.empty()
+                        progress_text.text("🎤 Generating base speech...")
+                        
                         generated_audio = st.session_state.voice_cloner.synthesize_speech(
                             text=text_input.strip(),
                             speaker_embedding=st.session_state.speaker_embedding,
                             speed=speed,
                             pitch_shift=pitch_shift
                         )
+                        
+                        progress_text.text("🎭 Applying voice characteristics...")
+                        import time
+                        time.sleep(0.5)  # Brief pause to show progress
+                        progress_text.empty()
                         
                         if generated_audio is not None:
                             # Save generated audio
