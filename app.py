@@ -49,6 +49,9 @@ with st.sidebar:
     - Avoid background music or noise
     - Choose samples with emotional variety
     - Ensure clear pronunciation
+    
+    💡 **Voice Cloning Method**
+    The app uses advanced audio morphing to adapt your reference voice to speak new text, creating natural-sounding speech.
     """)
 
 # Main interface

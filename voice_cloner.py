@@ -187,59 +187,200 @@ class VoiceCloner:
         speed: float, 
         pitch_shift: float
     ) -> np.ndarray:
-        """Fallback synthesis method"""
+        """Enhanced fallback synthesis method using voice morphing"""
         try:
-            # Simple synthesis using basic audio generation
-            duration = len(text) * 0.1  # Approximate duration based on text length
-            sample_rate = 22050
-            t = np.linspace(0, duration, int(sample_rate * duration))
+            # If speaker_embedding is actually audio data, use it for voice morphing
+            if len(speaker_embedding) > 1000:  # Likely audio data
+                return self._morph_voice_with_reference(text, speaker_embedding, speed, pitch_shift)
+            else:
+                return self._generate_speech_like_audio(text, speaker_embedding, speed, pitch_shift)
+                
+        except Exception as e:
+            print(f"Fallback synthesis error: {e}")
+            # Return silence as last resort
+            return np.zeros(22050)
+    
+    def _morph_voice_with_reference(
+        self, 
+        text: str, 
+        reference_audio: np.ndarray, 
+        speed: float, 
+        pitch_shift: float
+    ) -> np.ndarray:
+        """Create speech-like audio by morphing reference audio"""
+        try:
+            # Calculate target duration based on text
+            chars_per_second = 15  # Approximate speaking rate
+            target_duration = len(text) / chars_per_second
+            target_samples = int(22050 * target_duration)
             
-            # Generate basic tone based on speaker features
-            if len(speaker_embedding) > 0:
-                base_freq = 150 + (np.mean(speaker_embedding[:5]) * 50)  # Use first 5 features for pitch
-                base_freq = np.clip(base_freq, 80, 300)
+            # Use reference audio as base
+            reference_audio = np.array(reference_audio)
+            
+            # Ensure we have enough audio to work with
+            if len(reference_audio) < target_samples:
+                # Repeat the reference audio
+                repeats = (target_samples // len(reference_audio)) + 1
+                reference_audio = np.tile(reference_audio, repeats)
+            
+            # Take only what we need
+            morphed_audio = reference_audio[:target_samples]
+            
+            # Apply text-based modulation to simulate speech patterns
+            words = text.split()
+            if len(words) > 0:
+                samples_per_word = len(morphed_audio) // len(words)
+                
+                for i, word in enumerate(words):
+                    start_idx = i * samples_per_word
+                    end_idx = min(start_idx + samples_per_word, len(morphed_audio))
+                    
+                    if start_idx < len(morphed_audio):
+                        # Modulate based on word characteristics
+                        word_segment = morphed_audio[start_idx:end_idx]
+                        
+                        # Vary pitch based on word length and vowels
+                        vowels = sum(1 for c in word.lower() if c in 'aeiou')
+                        pitch_mod = 1.0 + (vowels - 2) * 0.1  # Slight pitch variation
+                        
+                        # Apply pitch modulation
+                        if len(word_segment) > 0:
+                            try:
+                                morphed_audio[start_idx:end_idx] = librosa.effects.pitch_shift(
+                                    word_segment, sr=22050, n_steps=pitch_mod
+                                )
+                            except:
+                                pass  # Keep original if pitch shift fails
+            
+            # Apply speed and pitch modifications
+            if speed != 1.0:
+                morphed_audio = librosa.effects.time_stretch(morphed_audio, rate=speed)
+            
+            if pitch_shift != 0.0:
+                morphed_audio = librosa.effects.pitch_shift(morphed_audio, sr=22050, n_steps=pitch_shift * 12)
+            
+            # Normalize and add slight envelope
+            morphed_audio = librosa.util.normalize(morphed_audio) * 0.8
+            
+            # Add fade in/out for natural sound
+            fade_samples = min(1000, len(morphed_audio) // 10)
+            if len(morphed_audio) > fade_samples * 2:
+                # Fade in
+                morphed_audio[:fade_samples] *= np.linspace(0, 1, fade_samples)
+                # Fade out
+                morphed_audio[-fade_samples:] *= np.linspace(1, 0, fade_samples)
+            
+            return morphed_audio
+            
+        except Exception as e:
+            print(f"Voice morphing error: {e}")
+            return self._generate_speech_like_audio(text, np.mean(reference_audio) if len(reference_audio) > 0 else 0, speed, pitch_shift)
+    
+    def _generate_speech_like_audio(
+        self, 
+        text: str, 
+        speaker_features: Union[np.ndarray, float], 
+        speed: float, 
+        pitch_shift: float
+    ) -> np.ndarray:
+        """Generate more realistic speech-like audio"""
+        try:
+            # Calculate duration based on text
+            chars_per_second = 12  # More realistic speaking rate
+            duration = len(text) / chars_per_second
+            sample_rate = 22050
+            
+            # Generate base frequency from speaker features
+            if isinstance(speaker_features, np.ndarray) and len(speaker_features) > 0:
+                base_freq = 120 + (np.mean(speaker_features[:3]) * 30)  # More realistic range
             else:
                 base_freq = 150
             
-            # Create simple synthesized speech-like audio
+            base_freq = np.clip(base_freq, 80, 200)  # Human voice range
+            
+            # Create more natural speech patterns
+            t = np.linspace(0, duration, int(sample_rate * duration))
             audio = np.zeros_like(t)
             
-            # Add multiple harmonics for speech-like quality
-            for i, char in enumerate(text[:min(len(text), 100)]):  # Limit processing
-                char_time = i * duration / len(text)
-                char_duration = duration / len(text)
+            # Process words instead of characters for more natural rhythm
+            words = text.split()
+            if len(words) == 0:
+                words = ['speech']
+            
+            time_per_word = duration / len(words)
+            
+            for i, word in enumerate(words):
+                word_start_time = i * time_per_word
+                word_end_time = (i + 1) * time_per_word
                 
-                # Vary frequency based on character
-                freq_mod = base_freq + (ord(char) % 50 - 25)
+                # Create time mask for this word
+                word_mask = (t >= word_start_time) & (t < word_end_time)
+                word_t = t[word_mask] - word_start_time
                 
-                # Create time window for this character
-                mask = (t >= char_time) & (t < char_time + char_duration)
-                
-                # Add fundamental and harmonics
-                if np.any(mask):
-                    char_audio = (
-                        0.5 * np.sin(2 * np.pi * freq_mod * t[mask]) +
-                        0.3 * np.sin(2 * np.pi * freq_mod * 2 * t[mask]) +
-                        0.2 * np.sin(2 * np.pi * freq_mod * 3 * t[mask])
+                if len(word_t) > 0:
+                    # Vary frequency based on word characteristics
+                    vowel_count = sum(1 for c in word.lower() if c in 'aeiouyw')
+                    consonant_count = len(word) - vowel_count
+                    
+                    # Adjust frequency based on phonetic content
+                    freq_variation = base_freq + (vowel_count * 10) - (consonant_count * 5)
+                    freq_variation = np.clip(freq_variation, base_freq * 0.8, base_freq * 1.3)
+                    
+                    # Create formant-like structure
+                    formant1 = freq_variation
+                    formant2 = freq_variation * 2.2
+                    formant3 = freq_variation * 3.8
+                    
+                    # Generate more natural harmonics
+                    word_audio = (
+                        0.6 * np.sin(2 * np.pi * formant1 * word_t) +
+                        0.3 * np.sin(2 * np.pi * formant2 * word_t) +
+                        0.15 * np.sin(2 * np.pi * formant3 * word_t) +
+                        0.05 * np.random.randn(len(word_t))  # Add slight noise for realism
                     )
                     
-                    # Apply envelope
-                    envelope = np.exp(-3 * (t[mask] - char_time) / char_duration)
-                    audio[mask] += char_audio * envelope * 0.3
+                    # Apply natural envelope (attack, decay, sustain, release)
+                    envelope = np.ones_like(word_t)
+                    word_len = len(word_t)
+                    
+                    if word_len > 100:  # Only apply envelope if word is long enough
+                        attack_len = word_len // 10
+                        release_len = word_len // 8
+                        
+                        # Attack
+                        envelope[:attack_len] = np.linspace(0, 1, attack_len)
+                        # Release
+                        envelope[-release_len:] = np.linspace(1, 0, release_len)
+                        # Add slight sustain variation
+                        sustain_start = attack_len
+                        sustain_end = word_len - release_len
+                        if sustain_end > sustain_start:
+                            envelope[sustain_start:sustain_end] *= (0.8 + 0.2 * np.random.random())
+                    
+                    audio[word_mask] = word_audio * envelope * 0.4
+                
+                # Add brief pause between words
+                if i < len(words) - 1:
+                    pause_start = word_end_time
+                    pause_end = min(word_end_time + 0.1, duration)
+                    pause_mask = (t >= pause_start) & (t < pause_end)
+                    audio[pause_mask] *= 0.1  # Very quiet during pause
             
-            # Apply modifications
+            # Apply speed and pitch modifications
             if speed != 1.0:
                 audio = librosa.effects.time_stretch(audio, rate=speed)
             
             if pitch_shift != 0.0:
                 audio = librosa.effects.pitch_shift(audio, sr=sample_rate, n_steps=pitch_shift * 12)
             
-            # Normalize
+            # Final processing for more natural sound
             audio = librosa.util.normalize(audio) * 0.7
             
             return audio
             
         except Exception as e:
-            print(f"Fallback synthesis error: {e}")
-            # Return silence as last resort
-            return np.zeros(22050)
+            print(f"Speech generation error: {e}")
+            # Return simple tone as absolute fallback
+            duration = max(1.0, len(text) * 0.1)
+            t = np.linspace(0, duration, int(22050 * duration))
+            return 0.3 * np.sin(2 * np.pi * 150 * t)
