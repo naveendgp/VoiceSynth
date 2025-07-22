@@ -136,34 +136,61 @@ class VoiceCloner:
     def _extract_simple_features(self, audio: np.ndarray) -> np.ndarray:
         """Extract simple audio features as speaker representation with gender detection"""
         try:
-            # Extract fundamental frequency for gender detection
-            pitches, magnitudes = librosa.piptrack(y=audio, sr=22050)
-            pitches_clean = pitches[magnitudes > np.percentile(magnitudes, 85)]
+            # Extract fundamental frequency for gender detection using better method
+            try:
+                # Use yin algorithm for better F0 estimation
+                f0 = librosa.yin(audio, fmin=50, fmax=400, sr=22050)
+                # Remove unvoiced frames (0 values) and outliers
+                f0_voiced = f0[f0 > 0]
+                
+                if len(f0_voiced) > 0:
+                    # Use median for robustness against outliers
+                    fundamental_freq = np.median(f0_voiced)
+                    # Also check if the median is reasonable
+                    if fundamental_freq > 400 or fundamental_freq < 50:
+                        # Fallback to percentile method
+                        fundamental_freq = np.percentile(f0_voiced, 50)
+                else:
+                    fundamental_freq = 0
+            except:
+                # Fallback to piptrack method with better filtering
+                pitches, magnitudes = librosa.piptrack(y=audio, sr=22050, fmin=50, fmax=400)
+                # Get only strong, low-frequency pitches (fundamental frequency range)
+                mask = magnitudes > np.percentile(magnitudes[magnitudes > 0], 75)
+                pitches_filtered = pitches[mask]
+                pitches_clean = pitches_filtered[(pitches_filtered > 50) & (pitches_filtered < 400)]
+                
+                if len(pitches_clean) > 0:
+                    fundamental_freq = np.median(pitches_clean)
+                else:
+                    fundamental_freq = 0
             
-            fundamental_freq = 0
             gender = 'unknown'
-            if len(pitches_clean) > 0:
-                pitch_values = pitches_clean[pitches_clean > 0]
-                if len(pitch_values) > 0:
-                    fundamental_freq = np.mean(pitch_values)
+            if fundamental_freq > 0:
+                print(f"Detected fundamental frequency: {fundamental_freq:.1f} Hz")
+                
+                # Gender detection with more conservative thresholds
+                if fundamental_freq < 160:  # Male range (typically 85-180 Hz)
+                    gender = 'male'
+                    print(f"Detected MALE voice (F0: {fundamental_freq:.1f} Hz)")
+                elif fundamental_freq > 190:  # Female range (typically 165-265 Hz)
+                    gender = 'female' 
+                    print(f"Detected FEMALE voice (F0: {fundamental_freq:.1f} Hz)")
+                else:
+                    # Use spectral centroid for ambiguous cases (160-190 Hz overlap)
+                    spectral_centroids = librosa.feature.spectral_centroid(y=audio, sr=22050)
+                    avg_centroid = np.mean(spectral_centroids)
+                    print(f"Ambiguous F0: {fundamental_freq:.1f} Hz, using spectral centroid: {avg_centroid:.1f}")
                     
-                    # Gender detection
-                    if fundamental_freq < 165:  # Male range
+                    if avg_centroid < 1800:  # Lower spectral centroid = male
                         gender = 'male'
-                        print(f"Detected MALE voice (F0: {fundamental_freq:.1f} Hz)")
-                    elif fundamental_freq > 180:  # Female range
-                        gender = 'female' 
-                        print(f"Detected FEMALE voice (F0: {fundamental_freq:.1f} Hz)")
+                        print(f"Detected MALE voice (ambiguous F0, low spectral centroid)")
                     else:
-                        # Use spectral centroid for ambiguous cases
-                        spectral_centroids = librosa.feature.spectral_centroid(y=audio, sr=22050)
-                        avg_centroid = np.mean(spectral_centroids)
-                        if avg_centroid < 2000:
-                            gender = 'male'
-                            print(f"Detected MALE voice (ambiguous F0: {fundamental_freq:.1f} Hz)")
-                        else:
-                            gender = 'female'
-                            print(f"Detected FEMALE voice (ambiguous F0: {fundamental_freq:.1f} Hz)")
+                        gender = 'female'
+                        print(f"Detected FEMALE voice (ambiguous F0, high spectral centroid)")
+            else:
+                print("Could not detect fundamental frequency, defaulting to male")
+                gender = 'male'  # Default to male when detection fails
             
             # Store gender information
             self.detected_gender = gender
@@ -682,9 +709,13 @@ asyncio.run(main())
             
             # Apply gender-appropriate pitch adjustment for Google TTS (which is female by default)
             if detected_gender == 'male':
-                # Lower pitch for male voice (-4 to -6 semitones)
+                # Lower pitch for male voice (-5 to -7 semitones)
+                base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-6)
+                print("Applied male voice pitch adjustment (-6 semitones)")
+            elif detected_gender == 'unknown':
+                # Default to male adjustment since most detection failures are with male voices
                 base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-5)
-                print("Applied male voice pitch adjustment")
+                print("Applied default male voice pitch adjustment (-5 semitones)")
             
             # Apply voice cloning transfer if reference audio available
             if len(speaker_embedding) > 1000:  # Reference audio available
