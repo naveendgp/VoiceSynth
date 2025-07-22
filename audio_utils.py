@@ -9,8 +9,9 @@ class AudioProcessor:
     
     def __init__(self):
         self.target_sr = 22050
-        self.max_duration = 60  # Maximum duration in seconds
-        self.min_duration = 3   # Minimum duration in seconds
+        self.max_duration = 300  # Maximum duration in seconds (5 minutes)
+        self.min_duration = 3    # Minimum duration in seconds
+        self.clip_duration = 30  # Clip longer files to this duration for processing
     
     def process_uploaded_audio(self, uploaded_file) -> Optional[np.ndarray]:
         """Process uploaded audio file and return normalized audio array"""
@@ -49,7 +50,8 @@ class AudioProcessor:
             
             if duration > self.max_duration:
                 print(f"Audio too long: {duration:.1f}s (maximum: {self.max_duration}s)")
-                return False
+                print("Audio will be clipped to first 30 seconds for processing")
+                # Don't return False, just warn and clip later
             
             # Check if audio has content (not just silence)
             rms = np.sqrt(np.mean(audio**2))
@@ -75,9 +77,10 @@ class AudioProcessor:
             # Apply gentle high-pass filter to remove low-frequency noise
             audio = librosa.effects.preemphasis(audio)
             
-            # Ensure reasonable length
-            max_samples = self.target_sr * 30  # 30 seconds max
+            # Clip to reasonable length for voice cloning
+            max_samples = self.target_sr * self.clip_duration  # Use clip_duration
             if len(audio) > max_samples:
+                print(f"Clipping audio from {len(audio)/self.target_sr:.1f}s to {self.clip_duration}s")
                 audio = audio[:max_samples]
             
             return audio

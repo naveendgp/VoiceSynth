@@ -30,8 +30,9 @@ st.markdown("Upload a voice sample and clone it to speak any text!")
 with st.sidebar:
     st.header("📋 Instructions")
     st.markdown("""
-    **Step 1:** Upload a clear audio sample (10-30 seconds)
+    **Step 1:** Upload a clear audio sample
     - Supported formats: WAV, MP3, M4A
+    - Any length (long files auto-clipped to 30 seconds)
     - Clear speech with minimal background noise
     - Single speaker recommended
     
@@ -98,7 +99,10 @@ with col1:
                             
                             # Show audio info
                             duration = len(audio_data) / 22050
-                            st.info(f"Audio processed: {duration:.1f} seconds")
+                            st.info(f"✅ Audio processed successfully: {duration:.1f} seconds")
+                            
+                            if duration >= 30:
+                                st.warning("⚠️ Long audio was clipped to 30 seconds for optimal voice analysis")
                         else:
                             st.error("❌ Failed to analyze voice. Please try a different audio file.")
                         
