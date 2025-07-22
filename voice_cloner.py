@@ -134,8 +134,40 @@ class VoiceCloner:
             return None
     
     def _extract_simple_features(self, audio: np.ndarray) -> np.ndarray:
-        """Extract simple audio features as speaker representation"""
+        """Extract simple audio features as speaker representation with gender detection"""
         try:
+            # Extract fundamental frequency for gender detection
+            pitches, magnitudes = librosa.piptrack(y=audio, sr=22050)
+            pitches_clean = pitches[magnitudes > np.percentile(magnitudes, 85)]
+            
+            fundamental_freq = 0
+            gender = 'unknown'
+            if len(pitches_clean) > 0:
+                pitch_values = pitches_clean[pitches_clean > 0]
+                if len(pitch_values) > 0:
+                    fundamental_freq = np.mean(pitch_values)
+                    
+                    # Gender detection
+                    if fundamental_freq < 165:  # Male range
+                        gender = 'male'
+                        print(f"Detected MALE voice (F0: {fundamental_freq:.1f} Hz)")
+                    elif fundamental_freq > 180:  # Female range
+                        gender = 'female' 
+                        print(f"Detected FEMALE voice (F0: {fundamental_freq:.1f} Hz)")
+                    else:
+                        # Use spectral centroid for ambiguous cases
+                        spectral_centroids = librosa.feature.spectral_centroid(y=audio, sr=22050)
+                        avg_centroid = np.mean(spectral_centroids)
+                        if avg_centroid < 2000:
+                            gender = 'male'
+                            print(f"Detected MALE voice (ambiguous F0: {fundamental_freq:.1f} Hz)")
+                        else:
+                            gender = 'female'
+                            print(f"Detected FEMALE voice (ambiguous F0: {fundamental_freq:.1f} Hz)")
+            
+            # Store gender information
+            self.detected_gender = gender
+            
             # Extract MFCC features
             mfcc = librosa.feature.mfcc(y=audio, sr=22050, n_mfcc=13)
             
@@ -143,15 +175,22 @@ class VoiceCloner:
             spectral_centroids = librosa.feature.spectral_centroid(y=audio, sr=22050)
             spectral_rolloff = librosa.feature.spectral_rolloff(y=audio, sr=22050)
             
-            # Combine features
-            features = np.concatenate([
-                np.mean(mfcc, axis=1),
-                np.std(mfcc, axis=1),
-                [np.mean(spectral_centroids)],
-                [np.mean(spectral_rolloff)]
-            ])
+            # Combine features with gender encoding
+            features = []
             
-            return features
+            # First feature encodes gender and pitch
+            if gender == 'male':
+                features.append(-abs(fundamental_freq) / 200)  # Negative for male
+            else:
+                features.append(abs(fundamental_freq) / 300)   # Positive for female/unknown
+            
+            # Add other features
+            features.extend(np.mean(mfcc, axis=1))
+            features.extend(np.std(mfcc, axis=1))
+            features.append(np.mean(spectral_centroids))
+            features.append(np.mean(spectral_rolloff))
+            
+            return np.array(features)
             
         except Exception as e:
             print(f"Error extracting simple features: {e}")
@@ -637,6 +676,16 @@ asyncio.run(main())
             except:
                 pass
             
+            # Detect gender from reference audio for voice adaptation
+            detected_gender = self._detect_gender_from_embedding(speaker_embedding)
+            print(f"Detected gender: {detected_gender}")
+            
+            # Apply gender-appropriate pitch adjustment for Google TTS (which is female by default)
+            if detected_gender == 'male':
+                # Lower pitch for male voice (-4 to -6 semitones)
+                base_audio = librosa.effects.pitch_shift(base_audio, sr=22050, n_steps=-5)
+                print("Applied male voice pitch adjustment")
+            
             # Apply voice cloning transfer if reference audio available
             if len(speaker_embedding) > 1000:  # Reference audio available
                 cloned_audio = self._apply_voice_transfer(base_audio, speaker_embedding)
@@ -659,6 +708,31 @@ asyncio.run(main())
         except Exception as e:
             print(f"Google TTS synthesis error: {e}")
             return self._synthesize_fallback(text, speaker_embedding, speed, pitch_shift)
+    
+    def _detect_gender_from_embedding(self, speaker_embedding: np.ndarray) -> str:
+        """Detect gender from speaker embedding features"""
+        try:
+            # Check if we already detected gender during feature extraction
+            if hasattr(self, 'detected_gender') and self.detected_gender != 'unknown':
+                return self.detected_gender
+            
+            if len(speaker_embedding) < 1:
+                return 'unknown'
+            
+            # The first feature encodes gender information
+            # Negative values = male, Positive values = female
+            gender_feature = speaker_embedding[0]
+            
+            if gender_feature < -0.1:
+                return 'male'
+            elif gender_feature > 0.1:
+                return 'female'
+            else:
+                return 'unknown'
+                    
+        except Exception as e:
+            print(f"Gender detection error: {e}")
+            return 'unknown'
     
     def _synthesize_with_xtts(
         self, 
