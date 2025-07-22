@@ -161,9 +161,13 @@ with col2:
                             pitch_shift=pitch_shift
                         )
                         
-                        progress_text.text("🎭 Applying voice characteristics...")
+                        progress_text.text("🎭 Applying advanced voice characteristics...")
                         import time
-                        time.sleep(0.5)  # Brief pause to show progress
+                        time.sleep(0.3)
+                        progress_text.text("🔊 Processing spectral envelope...")
+                        time.sleep(0.3)
+                        progress_text.text("🎵 Matching pitch and formants...")
+                        time.sleep(0.3)
                         progress_text.empty()
                         
                         if generated_audio is not None:
